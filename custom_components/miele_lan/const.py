@@ -225,6 +225,7 @@ HOB_FAMILY: tuple[MieleAppliance, ...] = (
     MieleAppliance.HOB_INDUCT_EXTR,
 )
 
+
 COOLING_FAMILY: tuple[MieleAppliance, ...] = (
     MieleAppliance.FRIDGE,
     MieleAppliance.FREEZER,

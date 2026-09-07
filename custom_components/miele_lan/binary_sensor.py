@@ -27,7 +27,7 @@ from .const import (
 )
 from .coordinator import MieleLanCoordinator
 from .entity import MieleLanEntity
-from .extended_state import parse_hob_extended_state
+from .extended_state import hob_zone_count, parse_hob_extended_state
 
 ALL_TYPES: tuple[MieleAppliance, ...] = tuple(
     t for t in MieleAppliance if t is not MieleAppliance.UNKNOWN
@@ -258,10 +258,13 @@ async def async_setup_entry(
     for coord in coordinators.values():
         dt = coord.device_type
         door_zones = _present_door_zones(coord)
+        zone_count = hob_zone_count(coord.data.state if coord.data else {})
         for d in BINARY_SENSOR_TYPES:
             if dt not in d.types:
                 continue
             key = d.description.key
+            if key.startswith("plate_") and int(key.split("_")[1]) > zone_count:
+                continue
             # Skip per-zone door sensors for absent zones (e.g. zone 3 on a
             # 2-compartment fridge-freezer).
             if key.startswith("door_zone_"):

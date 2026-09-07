@@ -24,7 +24,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import enums
-from .extended_state import parse_hob_extended_state
+from .extended_state import hob_zone_count, parse_hob_extended_state
 from .const import (
     COOLING_FAMILY,
     CYCLE_FAMILY,
@@ -170,13 +170,47 @@ def _hob_plate_step(state: dict[str, Any], zone: int) -> str | None:
     EK039W) the booster lives in `ExtendedState` and *not* in `PlateStep`,
     so this dual lookup is the only way to surface boost over LAN.
     """
+    ext = parse_hob_extended_state(state.get("ExtendedState"))
+    if ext and zone < len(ext.zones):
+        if ext.zones[zone].booster:
+            return f"boost_{ext.zones[zone].booster}"
+        # KM8684 omits PlateStep from /State and exposes the same raw
+        # power/residual-heat codes in ExtendedState instead.
+        plate = state.get("PlateStep")
+        if not isinstance(plate, list) or zone >= len(plate):
+            return enums.HobPlateStep.get(ext.zones[zone].power_level)
+
     plate = state.get("PlateStep") or []
     if zone >= len(plate):
         return None
-    ext = parse_hob_extended_state(state.get("ExtendedState"))
-    if ext and zone < len(ext.zones) and ext.zones[zone].booster:
-        return f"boost_{ext.zones[zone].booster}"
     return enums.HobPlateStep.get(plate[zone])
+
+
+def _hob_remaining_heat(state: dict[str, Any], zone: int) -> str | None:
+    """Read residual heat from /State, falling back to ExtendedState."""
+    remaining = state.get("PlateRemainingHeat")
+    if isinstance(remaining, list) and zone < len(remaining):
+        return enums.HobRemainingHeat.get(remaining[zone])
+
+    ext = parse_hob_extended_state(state.get("ExtendedState"))
+    if ext and zone < len(ext.zones):
+        raw = ext.zones[zone].power_level
+        return enums.RESIDUAL_HEAT_LEVELS.get(raw, "none" if 0 <= raw <= 23 else None)
+    return None
+
+
+def _hob_remaining_minutes(state: dict[str, Any], zone: int) -> int | None:
+    """Read a hob zone timer, falling back to ExtendedState."""
+    remaining = state.get("PlateRemainingMinutes")
+    if isinstance(remaining, list) and zone < len(remaining):
+        value = remaining[zone]
+        return value if isinstance(value, int) and value > 0 else None
+
+    ext = parse_hob_extended_state(state.get("ExtendedState"))
+    if ext and zone < len(ext.zones):
+        value = ext.zones[zone].duration_minutes
+        return value if value > 0 else None
+    return None
 
 
 def _temp_or_none(temps: Any, idx: int, *, divisor: int = 100) -> int | float | None:
@@ -529,11 +563,7 @@ SENSOR_TYPES: tuple[MieleLanSensorDef, ...] = (
             description=MieleLanSensorDescription(
                 key=f"plate_{n}_remaining_heat",
                 translation_key=f"plate_{n}_remaining_heat",
-                value_fn=lambda s, _i=n - 1: (
-                    enums.HobRemainingHeat.get((s.get("PlateRemainingHeat") or [0])[_i])
-                    if _i < len(s.get("PlateRemainingHeat") or [])
-                    else None
-                ),
+                value_fn=lambda s, _i=n - 1: _hob_remaining_heat(s, _i),
             ),
         )
         for n in range(1, 7)
@@ -547,7 +577,7 @@ SENSOR_TYPES: tuple[MieleLanSensorDef, ...] = (
                 device_class=SensorDeviceClass.DURATION,
                 native_unit_of_measurement=UnitOfTime.MINUTES,
                 value_fn=lambda s, _i=n - 1:
-                    s.get("PlateRemainingMinutes", [])[_i] if _i < len(s.get("PlateRemainingMinutes", [])) else None,
+                    _hob_remaining_minutes(s, _i),
             ),
         )
         for n in range(1, 7)
@@ -922,10 +952,15 @@ async def async_setup_entry(
         dt = coord.device_type
         temp_zones = _present_temperature_zones(coord)
         state = coord.data.state if coord.data else {}
+        zone_count = hob_zone_count(state)
         for d in SENSOR_TYPES:
             if dt not in d.types:
                 continue
             key = d.description.key
+            if key.startswith(("plate_", "cooktop_timer_")):
+                zone_number = key.split("_")[1] if key.startswith("plate_") else None
+                if zone_number and int(zone_number) > zone_count:
+                    continue
             # Skip per-zone temperature sensors for absent zones (e.g. zone 3
             # on a 2-compartment fridge-freezer where Temperature[2] == -32768).
             if key.startswith("temperature_zone_") or key.startswith("target_temperature_zone_"):
