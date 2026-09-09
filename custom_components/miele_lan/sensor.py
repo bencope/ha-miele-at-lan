@@ -228,6 +228,8 @@ def _minutes(field: Any) -> int | None:
     """Convert /State.RemainingTime [h, m] → total minutes."""
     if isinstance(field, list) and len(field) == 2 and all(isinstance(x, int) for x in field):
         return field[0] * 60 + field[1]
+    if isinstance(field, int):
+        return field        
     return None
 
 
